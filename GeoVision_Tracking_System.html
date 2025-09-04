@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advanced Parcel Tracking System</title>
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet Routing Machine -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      font-family: Arial, sans-serif;
+      background: #fafafa;
+    }
+
+    #panel {
+      width: 360px;
+      background: #fff;
+      padding: 15px;
+      border-right: 2px solid #dc3545;
+      box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+    }
+
+    #map {
+      flex: 1;
+      height: 100vh;
+    }
+
+    h2 {
+      color: #dc3545;
+      margin-bottom: 10px;
+    }
+
+    .status,
+    .infoBox,
+    .alertBox,
+    .policeBox {
+      padding: 10px;
+      margin: 12px 0;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .status {
+      background: #fef1f1;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+
+    .infoBox {
+      background: #f1f1f1;
+      color: #333;
+      border: 1px solid #ddd;
+    }
+
+    .alertBox {
+      background: #ffcccc;
+      color: #721c24;
+      border: 2px solid red;
+      font-weight: bold;
+      display: none;
+    }
+
+    .policeBox {
+      background: #fff4e5;
+      border: 1px solid #ffa500;
+      display: none;
+    }
+
+    button {
+      margin-top: 10px;
+      padding: 10px;
+      width: 100%;
+      background: #dc3545;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 6px;
+      font-weight: bold;
+      font-size: 15px;
+    }
+
+    button:hover {
+      background: #a71d2a;
+    }
+
+    .time {
+      font-size: 13px;
+      color: #666;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Panel -->
+  <div id="panel">
+    <h2>📦 GeoVision Tracking System</h2>
+
+    <div><b>Shipment ID:</b> <span id="shipmentId">TCS123456</span></div>
+    <div id="clock" class="time"></div>
+
+    <div class="status" id="statusBox">Status: Waiting for pickup...</div>
+
+    <label>Pickup Location:</label>
+    <div class="infoBox" id="pickupPlace">-</div>
+
+    <label>Delivery Location:</label>
+    <div class="infoBox" id="deliveryPlace">-</div>
+
+    <button onclick="setRoute()">Start Tracking</button>
+    <button onclick="confirmReceived()">✅ Confirm Parcel Received</button>
+
+    <div class="infoBox">
+      🚗 Current Place: <span id="currentPlace">-</span><br>
+      📏 Distance: <span id="distance">-</span><br>
+      ⏱ ETA: <span id="eta">-</span>
+    </div>
+
+    <div id="alertBox" class="alertBox">
+      ⚠️ ALERT: Parcel is detracked!  
+      <br><b>Reason:</b> <span id="detrackReason">-</span>  
+      <br><button onclick="resumeTracking()">🔄 Resume Tracking</button>
+    </div>
+
+    <div id="policeBox" class="policeBox">
+      🚓 <b>Nearest Police Station</b><br>
+      📍 <span id="policeName">-</span><br>
+      🏢 <span id="policeAddress">-</span><br>
+      ☎ <span id="policePhone">-</span>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <script>
+  var map = L.map('map').setView([33.7201, 73.0737], 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  var control = L.Routing.control({
+    waypoints: [],
+    router: L.Routing.osrmv1({
+      serviceUrl: 'https://router.project-osrm.org/route/v1'
+    }),
+    routeWhileDragging: true,
+    addWaypoints: false
+  }).addTo(map);
+
+  var clickCount = 0;
+  var carMarker, startMarker, endMarker, routeCoords = [];
+
+  var carIcon = L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448446.png",
+    iconSize: [40, 40],
+    iconAnchor: [20, 20]
+  });
+
+  var startIcon = L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+    iconSize: [30, 40],
+    iconAnchor: [15, 40]
+  });
+
+  var endIcon = L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/149/149059.png",
+    iconSize: [30, 40],
+    iconAnchor: [15, 40]
+  });
+
+  // -------------------------------
+  // Dynamic Police Stations Loading
+  // -------------------------------
+  let policeStations = [];
+
+  async function loadPoliceStations() {
+    try {
+      let res = await fetch('police_stations.json'); // JSON file path
+      policeStations = await res.json();
+    } catch (err) {
+      console.error("Failed to load police stations", err);
+    }
+  }
+  loadPoliceStations();
+
+  function getNearestPoliceStation(lat, lon) {
+    let nearest = null;
+    let minDist = Infinity;
+    policeStations.forEach(station => {
+      let dist = Math.sqrt(Math.pow(lat - station.lat, 2) + Math.pow(lon - station.lon, 2));
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = station;
+      }
+    });
+    return nearest;
+  }
+
+  async function getPlaceName(lat, lng) {
+    try {
+      let res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+      let data = await res.json();
+      return data.display_name || "Unknown location";
+    } catch {
+      return "Unknown location";
+    }
+  }
+
+  // Expanded professional detrack reasons
+  const detrackReasons = [
+    "Vehicle breakdown",
+    "Network issue – GPS lost",
+    "Driver emergency",
+    "Severe traffic jam",
+    "Security concern",
+    "Road accident on route",
+    "Weather disruption (heavy rain/fog)",
+    "Parcel verification at checkpoint",
+    "Temporary route diversion",
+    "Fuel shortage / refueling stop",
+    "System synchronization delay",
+    "Unexpected road closure",
+    "Medical emergency of driver",
+    "Mechanical inspection required",
+    "Authority/security inspection"
+  ];
+
+  // Tracking state
+  let currentIndex = 0;
+  let pausedIndex = null;
+  let isPaused = false;
+
+  // Map clicks for pickup and delivery
+  map.on('click', async function (e) {
+    clickCount++;
+    if (clickCount === 1) {
+      if (startMarker) map.removeLayer(startMarker);
+      startMarker = L.marker(e.latlng, { icon: startIcon }).addTo(map).bindTooltip("Pickup Location");
+
+      let place = await getPlaceName(e.latlng.lat, e.latlng.lng);
+      document.getElementById("pickupPlace").innerText = place;
+      document.getElementById("statusBox").innerText = "Status: 📦 Order Picked Up";
+    } else if (clickCount === 2) {
+      if (endMarker) map.removeLayer(endMarker);
+      endMarker = L.marker(e.latlng, { icon: endIcon }).addTo(map).bindTooltip("Delivery Location");
+
+      let place = await getPlaceName(e.latlng.lat, e.latlng.lng);
+      document.getElementById("deliveryPlace").innerText = place;
+      document.getElementById("statusBox").innerText = "Status: 🚚 Out for Delivery";
+
+      clickCount = 0;
+    }
+  });
+
+  // Animate car with resume support
+  async function animateCar(routeCoordinates, totalDistance, totalTime) {
+    routeCoords = routeCoordinates;
+    if (!carMarker) {
+      carMarker = L.marker(routeCoords[0], { icon: carIcon }).addTo(map);
+    }
+
+    document.getElementById("distance").innerText = (totalDistance / 1000).toFixed(2) + " km";
+    document.getElementById("eta").innerText = Math.ceil(totalTime / 60) + " mins";
+
+    const professionalStops = [
+      "Taking a short break",
+      "Lunch break",
+      "Prayer time",
+      "Washroom break",
+      "Traffic delay"
+    ];
+
+    async function move() {
+      if (isPaused) return; // stop moving if paused
+
+      if (currentIndex < routeCoords.length) {
+        carMarker.setLatLng(routeCoords[currentIndex]);
+        let place = await getPlaceName(routeCoords[currentIndex].lat, routeCoords[currentIndex].lng);
+        document.getElementById("currentPlace").innerText = place;
+
+        if (currentIndex < routeCoords.length / 3) {
+          document.getElementById("statusBox").innerText = "Status: 🚗 On the Way";
+        } else if (currentIndex < (routeCoords.length - 5)) {
+          document.getElementById("statusBox").innerText = "Status: 🕒 Arriving Soon";
+        }
+
+        if (Math.random() < 0.01) { // Detrack
+          triggerDetrackAlert(routeCoords[currentIndex]);
+          return;
+        }
+
+        if (Math.random() < 0.02) { // Professional stop
+          let stopReason = professionalStops[Math.floor(Math.random() * professionalStops.length)];
+          document.getElementById("statusBox").innerText = `⏸️ Parcel temporarily stopped: ${stopReason}`;
+          setTimeout(() => {
+            if (!isPaused) move();
+          }, 3000 + Math.random() * 4000);
+          return;
+        }
+
+        currentIndex++;
+        setTimeout(move, 800);
+      } else {
+        document.getElementById("statusBox").innerText = "Status: ✅ Delivered";
+      }
+    }
+
+    move();
+  }
+
+  function triggerDetrackAlert(location) {
+    isPaused = true;
+    pausedIndex = currentIndex;
+
+    document.getElementById("alertBox").style.display = "block";
+    let reason = detrackReasons[Math.floor(Math.random() * detrackReasons.length)];
+    document.getElementById("detrackReason").innerText = reason;
+
+    document.getElementById("statusBox").innerText =
+      `⚠️ Parcel Detracked near ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)} (${reason})`;
+
+    let nearest = getNearestPoliceStation(location.lat, location.lng);
+    if (nearest) {
+      document.getElementById("policeBox").style.display = "block";
+      document.getElementById("policeName").innerText = nearest.name;
+      document.getElementById("policeAddress").innerText = nearest.address;
+      document.getElementById("policePhone").innerText = nearest.phone;
+
+      alert(`🚨 Parcel detracked due to "${reason}"!\nNearest Police Station: ${nearest.name}, Phone: ${nearest.phone}`);
+    }
+  }
+
+  function resumeTracking() {
+    document.getElementById("alertBox").style.display = "none";
+    document.getElementById("policeBox").style.display = "none";
+    document.getElementById("statusBox").innerText = "✅ Tracking Resumed";
+
+    isPaused = false;
+    if (pausedIndex !== null) {
+      currentIndex = pausedIndex; // continue where it left
+    }
+    animateCar(routeCoords, 1000, 600);
+  }
+
+  function setRoute() {
+    if (!startMarker || !endMarker) {
+      alert("Please set pickup and delivery points");
+      return;
+    }
+
+    let startLatLng = startMarker.getLatLng();
+    let endLatLng = endMarker.getLatLng();
+
+    control.setWaypoints([startLatLng, endLatLng]);
+    map.fitBounds(L.latLngBounds([startLatLng, endLatLng]));
+
+    control.off('routesfound');
+    control.on('routesfound', function (e) {
+      var route = e.routes[0];
+      currentIndex = 0; // reset
+      animateCar(route.coordinates, route.summary.totalDistance, route.summary.totalTime);
+    });
+  }
+
+  function confirmReceived() {
+    document.getElementById("statusBox").innerText = "Status: ✅ Parcel Received by Customer";
+    if (carMarker) map.removeLayer(carMarker);
+  }
+
+  function updateClock() {
+    let now = new Date();
+    let options = { weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: true };
+    let timeStr = now.toLocaleTimeString([], options);
+    let dateStr = now.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    document.getElementById("clock").innerText = `🕒 ${dateStr}, ${timeStr}`;
+  }
+  setInterval(updateClock, 1000);
+</script>
+
+</body>
+</html>
